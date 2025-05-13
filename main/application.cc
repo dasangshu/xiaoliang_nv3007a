@@ -109,21 +109,35 @@ Application::Application() {
                     printf("%x ", buffer[i]);
                 }
                 ESP_LOGI(TAG, "00001");
+                Application* app = (Application*)arg;
+                app->WakeWordInvoke("小亮同学");
                 esp_log_buffer_hex(TAG, buffer, len);
             }
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     }, "uart2_receive_task", 4096, this, 2, nullptr);
-// 创建串口接收任务
+
+
+    // 创建串口接收任务（1分钟检测一次）
     xTaskCreate([](void* arg) {
         Application* app = (Application*)arg;
-        uint8_t buffer[8]; // 用于存储 8 字节数据
+        uint8_t buffer[8];
         int buffer_index = 0;
-
+        
+        // 用于存储最新的手势和身体状态
+        uint8_t latest_hand_status = 0xFF;  // 初始值设为无效值
+        uint8_t latest_body_status = 0xFF;  // 初始值设为无效值
+        
+        // 上次更新显示的时间
+        TickType_t last_update_time = xTaskGetTickCount();
+        const TickType_t update_interval = pdMS_TO_TICKS(60000); // 60秒 = 1分钟
+        
         while (true) {
             uint8_t data;
             int len = uart_read_bytes(UART_NUM_1, &data, 1, pdMS_TO_TICKS(100));
+            
             if (len > 0) {
+                // 原有的包解析逻辑保持不变
                 if (buffer_index == 0 && data == 0xAA) {
                     buffer[buffer_index++] = data;
                 } else if (buffer_index == 1 && data == 0xAF) {
@@ -135,76 +149,69 @@ Application::Application() {
                 if (buffer_index == 8) {
                     // 检查包尾
                     if (buffer[6] == 0xAF && buffer[7] == 0xFF) {
-                        // 解析第三个字节的数值
-                        uint8_t hand_byte_value = buffer[2];
-                        uint8_t body_byte_value = buffer[3];
-                        // ESP_LOGI(TAG, "Parsed third byte value: 0x%02X", third_byte_value);
-                        // 可以根据解析结果执行相应操作
-                        // 例如，根据不同数值调用不同方法
-                        // switch (hand_byte_value) {
-                        //     case 0x01:
-                        //         // app->StartListening();
-                        //         break;
-                        //     case 0x02:
-                        //         // app->StopListening();
-                        //         break;
-                        //     default:
-                        //         ESP_LOGI(TAG, "Unknown third byte value: 0x%02X", hand_byte_value);
-                        //         break;
-                        // }
-
-                        switch (hand_byte_value)
-                            {
-                            case SPD_HAND_DROP:
-                                printf("下垂\r\n");
-                                Board::GetInstance().GetDisplay()->SetSittingHandText("手：下垂");
-                                break;
-                            case SPD_HAND_HOLD_FACE:
-                                printf("撑脸\r\n");
-                                Board::GetInstance().GetDisplay()->SetSittingHandText("手：撑脸");
-                                break;
-                            case SPD_HAND_NORMAL:
-                                Board::GetInstance().GetDisplay()->SetSittingHandText("手：正常");
-                                printf("正常\r\n");
-                                break;
-
-                            default:
-                                break;
-                            }
-                            switch (body_byte_value)
-                            {
-                            case SPD_BODY_LAYONTABLE:
-                                printf("趴桌\r\n");
-                                Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：趴桌");
-                                break;
-                            case SPD_BODY_TILTED:
-                                printf("倾斜\r\n");
-                                Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：倾斜");
-                                break;
-                            case SPD_BODY_HUNCHBACK:
-                                printf("驼背\r\n");
-                                Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：驼背");
-                                break;
-                            case SPD_BODY_LEAVE:
-                                printf("离席\r\n");
-                                Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：离席");
-                                break;
-                            case SPD_BODY_NORMAL:
-                                printf("正常\r\n");
-                                Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：正常");
-                                break;
-
-                            default:
-                                break;
-                            }
-                    } else {
-                        ESP_LOGW(TAG, "Invalid packet tail, discard the packet.");
+                        // 更新最新状态
+                        latest_hand_status = buffer[2];
+                        latest_body_status = buffer[3];
                     }
                     buffer_index = 0; // 重置缓冲区索引
                 }
             }
+            
+            // 检查是否到了更新显示的时间
+            TickType_t current_time = xTaskGetTickCount();
+            if ((current_time - last_update_time) >= update_interval) {
+                // 只有在有有效数据时才更新显示
+                if (latest_hand_status != 0xFF && latest_body_status != 0xFF) {
+                    // 更新手势状态显示
+                    switch (latest_hand_status) {
+                        case SPD_HAND_DROP:
+                            printf("下垂\r\n");
+                            Board::GetInstance().GetDisplay()->SetSittingHandText("手：下垂");
+                            break;
+                        case SPD_HAND_HOLD_FACE:
+                            printf("撑脸\r\n");
+                            Board::GetInstance().GetDisplay()->SetSittingHandText("手：撑脸");
+                            break;
+                        case SPD_HAND_NORMAL:
+                            Board::GetInstance().GetDisplay()->SetSittingHandText("手：正常");
+                            printf("正常\r\n");
+                            break;
+                        default:
+                            break;
+                    }
+                    
+                    // 更新身体状态显示
+                    switch (latest_body_status) {
+                        case SPD_BODY_LAYONTABLE:
+                            printf("趴桌\r\n");
+                            Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：趴桌");
+                            break;
+                        case SPD_BODY_TILTED:
+                            printf("倾斜\r\n");
+                            Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：倾斜");
+                            break;
+                        case SPD_BODY_HUNCHBACK:
+                            printf("驼背\r\n");
+                            Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：驼背");
+                            break;
+                        case SPD_BODY_LEAVE:
+                            printf("离席\r\n");
+                            Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：离席");
+                            break;
+                        case SPD_BODY_NORMAL:
+                            printf("正常\r\n");
+                            Board::GetInstance().GetDisplay()->SetSittingPostureText("身体：正常");
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                
+                last_update_time = current_time;
+            }
         }
     }, "uart_receive_task", 4096, this, 2, nullptr);
+
 
     esp_timer_create_args_t clock_timer_args = {
         .callback = [](void* arg) {
